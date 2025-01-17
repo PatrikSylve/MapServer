@@ -2532,17 +2532,59 @@ static int msOGRFileWhichShapes(layerObj *layer, rectObj rect,
         OGR_L_SetSpatialFilter(psInfo->hLayer, hSpatialFilterLine);
         OGR_G_DestroyGeometry(hSpatialFilterLine);
       } else {
-        OGRGeometryH hSpatialFilterPolygon = OGR_G_CreateGeometry(wkbPolygon);
-        OGRGeometryH hRing = OGR_G_CreateGeometry(wkbLinearRing);
+        /**
+		 * Case when layer is in latlon and requested proj is epsg:32661 and rect crosses the antimeridian
+		 *
+		 * Transform using ogr with wrapdateline option
+		 */
+		if (msProjIsGeographicCRS(&(layer->projection)) && strncmp(layer->map->projection.args[0], "init=epsg:32661",
+              strlen("init=epsg:32661")) == 0 && rect.minx < -180) {
+			rectObj mapRect = layer->map->saved_extent;
 
-        OGR_G_AddPoint_2D(hRing, rect.minx, rect.miny);
-        OGR_G_AddPoint_2D(hRing, rect.maxx, rect.miny);
-        OGR_G_AddPoint_2D(hRing, rect.maxx, rect.maxy);
-        OGR_G_AddPoint_2D(hRing, rect.minx, rect.maxy);
-        OGR_G_AddPoint_2D(hRing, rect.minx, rect.miny);
-        OGR_G_AddGeometryDirectly(hSpatialFilterPolygon, hRing);
-        OGR_L_SetSpatialFilter(psInfo->hLayer, hSpatialFilterPolygon);
-        OGR_G_DestroyGeometry(hSpatialFilterPolygon);
+			OGRSpatialReferenceH hSourceSRS = OSRNewSpatialReference(NULL);
+			OSRImportFromEPSG(hSourceSRS, 32661);
+			OSRSetAxisMappingStrategy(hSourceSRS, OAMS_TRADITIONAL_GIS_ORDER);  
+		
+			OGRSpatialReferenceH hTargetSRS = OSRNewSpatialReference(NULL);
+			OSRImportFromEPSG(hTargetSRS, 4326);
+			OSRSetAxisMappingStrategy(hTargetSRS, OAMS_TRADITIONAL_GIS_ORDER);  
+
+			OGRGeometryH hRing = OGR_G_CreateGeometry(wkbLinearRing);
+			OGR_G_AddPoint_2D(hRing, mapRect.minx, mapRect.miny);
+			OGR_G_AddPoint_2D(hRing, mapRect.maxx, mapRect.miny);
+			OGR_G_AddPoint_2D(hRing, mapRect.maxx, mapRect.maxy);
+			OGR_G_AddPoint_2D(hRing, mapRect.minx, mapRect.maxy);
+			OGR_G_AddPoint_2D(hRing, mapRect.minx, mapRect.miny);
+
+			OGRGeometryH hPolygon = OGR_G_CreateGeometry(wkbPolygon);
+			OGR_G_AddGeometryDirectly(hPolygon, hRing);
+			
+			char **papszOptions = NULL;
+			papszOptions = CSLAddNameValue(papszOptions, "WRAPDATELINE", "YES");
+			OGRCoordinateTransformationH hTransform = OCTNewCoordinateTransformation(hSourceSRS, hTargetSRS);
+			OGRGeomTransformerH hGeomTransformer = OGR_GeomTransformer_Create(hTransform, papszOptions); 
+			OGRGeometryH hPolygonTransformed = OGR_GeomTransformer_Transform(hGeomTransformer, hPolygon); 
+			
+			OGR_L_SetSpatialFilter(psInfo->hLayer, hPolygonTransformed);
+			// Clean up
+			OGR_G_DestroyGeometry(hPolygonTransformed); 
+			OGR_G_DestroyGeometry(hPolygon);
+			CSLDestroy(papszOptions); 
+			OSRDestroySpatialReference(hSourceSRS); 
+			OSRDestroySpatialReference(hTargetSRS); 
+		} else {
+			OGRGeometryH hSpatialFilterPolygon = OGR_G_CreateGeometry(wkbPolygon);
+			OGRGeometryH hRing = OGR_G_CreateGeometry(wkbLinearRing);
+
+			OGR_G_AddPoint_2D(hRing, rect.minx, rect.miny);
+			OGR_G_AddPoint_2D(hRing, rect.maxx, rect.miny);
+			OGR_G_AddPoint_2D(hRing, rect.maxx, rect.maxy);
+			OGR_G_AddPoint_2D(hRing, rect.minx, rect.maxy);
+			OGR_G_AddPoint_2D(hRing, rect.minx, rect.miny);
+			OGR_G_AddGeometryDirectly(hSpatialFilterPolygon, hRing);
+			OGR_L_SetSpatialFilter(psInfo->hLayer, hSpatialFilterPolygon);
+			OGR_G_DestroyGeometry(hSpatialFilterPolygon);
+		}
       }
 
       if (layer->debug >= MS_DEBUGLEVEL_VVV) {
